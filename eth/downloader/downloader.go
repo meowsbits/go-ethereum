@@ -774,6 +774,11 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 	}
 	p.log.Debug("Looking for common ancestor", "local", localHeight, "remote", remoteHeight)
 
+	if localHeight == 0 {
+		p.log.Debug("Short circuiting common ancestor search", "reason", "local at genesis", "local", localHeight, "remote", remoteHeight)
+		return 0, nil
+	}
+
 	// Recap floor value for binary search
 	maxForkAncestry := fullMaxForkAncestry
 	if d.getMode() == LightSync {
