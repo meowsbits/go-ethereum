@@ -798,6 +798,9 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 			floor = int64(d.genesis) - 1
 		}
 	}
+	if floor == -1 {
+		floor = 0
+	}
 
 	ancestor, err := d.findAncestorSpanSearch(p, remoteHeight, localHeight, uint64(floor))
 	if err == nil {
@@ -816,86 +819,14 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 		return 0, err
 	}
 
-	hash := common.Hash{}
-
-	// Ancestor not found, we need to binary search over our chain
-	start, end := uint64(0), remoteHeight
-	if floor > 0 {
-		start = uint64(floor)
+	ancestor, err = d.findAncestorBinarySearch(p, remoteHeight, uint64(floor))
+	if err != nil {
+		return 0, err
 	}
-	p.log.Trace("Binary searching for common ancestor", "start", start, "end", end)
-
-	for start+1 < end {
-		// Split our chain interval in two, and request the hash to cross check
-		check := (start + end) / 2
-
-		ttl := d.requestTTL()
-		timeout := time.After(ttl)
-
-		go p.peer.RequestHeadersByNumber(check, 1, 0, false)
-
-		// Wait until a reply arrives to this request
-		for arrived := false; !arrived; {
-			select {
-			case <-d.cancelCh:
-				return 0, errCanceled
-
-			case packet := <-d.headerCh:
-				// Discard anything not from the origin peer
-				if packet.PeerId() != p.id {
-					log.Debug("Received headers from incorrect peer", "peer", packet.PeerId())
-					break
-				}
-				// Make sure the peer actually gave something valid
-				headers := packet.(*headerPack).headers
-				if len(headers) != 1 {
-					p.log.Warn("Multiple headers for single request", "headers", len(headers))
-					return 0, fmt.Errorf("%w: multiple headers (%d) for single request", errBadPeer, len(headers))
-				}
-				arrived = true
-
-				// Modify the search interval based on the response
-				h := headers[0].Hash()
-				n := headers[0].Number.Uint64()
-
-				var known bool
-				switch mode {
-				case FullSync:
-					known = d.blockchain.HasBlock(h, n)
-				case FastSync:
-					known = d.blockchain.HasFastBlock(h, n)
-				default:
-					known = d.lightchain.HasHeader(h, n)
-				}
-				if !known {
-					end = check
-					break
-				}
-				header := d.lightchain.GetHeaderByHash(h) // Independent of sync mode, header surely exists
-				if header.Number.Uint64() != check {
-					p.log.Warn("Received non requested header", "number", header.Number, "hash", header.Hash(), "request", check)
-					return 0, fmt.Errorf("%w: non-requested header (%d)", errBadPeer, header.Number)
-				}
-				start = check
-				hash = h
-
-			case <-timeout:
-				p.log.Debug("Waiting for search header timed out", "elapsed", ttl)
-				return 0, errTimeout
-
-			case <-d.bodyCh:
-			case <-d.receiptCh:
-				// Out of bounds delivery, ignore
-			}
-		}
+	if ancestor > localHeight {
+		ancestor = localHeight
 	}
-	// Ensure valid ancestry and return
-	if int64(start) <= floor {
-		p.log.Warn("Ancestor below allowance", "number", start, "hash", hash, "allowance", floor)
-		return 0, errInvalidAncestor
-	}
-	p.log.Debug("Found common ancestor", "number", start, "hash", hash)
-	return start, nil
+	return ancestor, nil
 }
 
 func (d *Downloader) findAncestorSpanSearch(p *peerConnection, remoteHeight, localHeight, floor uint64) (commonAncestor uint64, err error) {
@@ -980,6 +911,89 @@ func (d *Downloader) findAncestorSpanSearch(p *peerConnection, remoteHeight, loc
 		return number, nil
 	}
 	return 0, errNoAncestor
+}
+
+func (d *Downloader) findAncestorBinarySearch(p *peerConnection, remoteHeight, floor uint64) (commonAncestor uint64, err error) {
+	hash := common.Hash{}
+
+	// Ancestor not found, we need to binary search over our chain
+	start, end := uint64(0), remoteHeight
+	if floor > 0 {
+		start = floor
+	}
+	p.log.Trace("Binary searching for common ancestor", "start", start, "end", end)
+
+	for start+1 < end {
+		// Split our chain interval in two, and request the hash to cross check
+		check := (start + end) / 2
+
+		ttl := d.requestTTL()
+		timeout := time.After(ttl)
+
+		go p.peer.RequestHeadersByNumber(check, 1, 0, false)
+
+		// Wait until a reply arrives to this request
+		for arrived := false; !arrived; {
+			select {
+			case <-d.cancelCh:
+				return 0, errCanceled
+
+			case packet := <-d.headerCh:
+				// Discard anything not from the origin peer
+				if packet.PeerId() != p.id {
+					log.Debug("Received headers from incorrect peer", "peer", packet.PeerId())
+					break
+				}
+				// Make sure the peer actually gave something valid
+				headers := packet.(*headerPack).headers
+				if len(headers) != 1 {
+					p.log.Warn("Multiple headers for single request", "headers", len(headers))
+					return 0, fmt.Errorf("%w: multiple headers (%d) for single request", errBadPeer, len(headers))
+				}
+				arrived = true
+
+				// Modify the search interval based on the response
+				h := headers[0].Hash()
+				n := headers[0].Number.Uint64()
+
+				var known bool
+				switch d.getMode() {
+				case FullSync:
+					known = d.blockchain.HasBlock(h, n)
+				case FastSync:
+					known = d.blockchain.HasFastBlock(h, n)
+				default:
+					known = d.lightchain.HasHeader(h, n)
+				}
+				if !known {
+					end = check
+					break
+				}
+				header := d.lightchain.GetHeaderByHash(h) // Independent of sync mode, header surely exists
+				if header.Number.Uint64() != check {
+					p.log.Warn("Received non requested header", "number", header.Number, "hash", header.Hash(), "request", check)
+					return 0, fmt.Errorf("%w: non-requested header (%d)", errBadPeer, header.Number)
+				}
+				start = check
+				hash = h
+
+			case <-timeout:
+				p.log.Debug("Waiting for search header timed out", "elapsed", ttl)
+				return 0, errTimeout
+
+			case <-d.bodyCh:
+			case <-d.receiptCh:
+				// Out of bounds delivery, ignore
+			}
+		}
+	}
+	// Ensure valid ancestry and return
+	if start <= floor && floor != 0 {
+		p.log.Warn("Ancestor below allowance", "number", start, "hash", hash, "allowance", floor)
+		return 0, errInvalidAncestor
+	}
+	p.log.Debug("Found common ancestor", "number", start, "hash", hash)
+	return start, nil
 }
 
 // fetchHeaders keeps retrieving headers concurrently from the number
