@@ -755,7 +755,8 @@ func calculateRequestSpan(remoteHeight, localHeight uint64) (int64, int, int, ui
 func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header) (uint64, error) {
 	// Figure out the valid ancestor range to prevent rewrite attacks
 	var (
-		floor        = int64(-1)
+		// floor is a exclusive lower boundary.
+		floor        uint64
 		localHeight  uint64
 		remoteHeight = remoteHeader.Number.Uint64()
 	)
@@ -777,7 +778,7 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 	}
 	if localHeight >= maxForkAncestry {
 		// We're above the max reorg threshold, find the earliest fork point
-		floor = int64(localHeight - maxForkAncestry)
+		floor = localHeight - maxForkAncestry
 	}
 	// If we're doing a light sync, ensure the floor doesn't go below the CHT, as
 	// all headers before that point will be missing.
@@ -787,22 +788,23 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 			header := d.lightchain.CurrentHeader()
 			for header != nil {
 				d.genesis = header.Number.Uint64()
-				if floor >= int64(d.genesis)-1 {
+				// Note that when d.genesis is 0, the conditional value will wrap around to a very big number (because uint64).
+				// This is actually OK since
+				// - this code won't run when local is at genesis (because of the short circuit above), and
+				// - the nil header returned by the parent hash of genesis will break the loop.
+				if floor >= d.genesis-1 {
 					break
 				}
 				header = d.lightchain.GetHeaderByHash(header.ParentHash)
 			}
 		}
 		// We already know the "genesis" block number, cap floor to that
-		if floor < int64(d.genesis)-1 {
-			floor = int64(d.genesis) - 1
+		if floor < d.genesis-1 {
+			floor = d.genesis - 1
 		}
 	}
-	if floor == -1 {
-		floor = 0
-	}
 
-	ancestor, err := d.findAncestorSpanSearch(p, remoteHeight, localHeight, uint64(floor))
+	ancestor, err := d.findAncestorSpanSearch(p, remoteHeight, localHeight, floor)
 	if err == nil {
 		// Limit common ancestor height to local height.
 		// The returned common ancestor value can be above our local height if it is not considered canonical.
@@ -819,7 +821,7 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 		return 0, err
 	}
 
-	ancestor, err = d.findAncestorBinarySearch(p, remoteHeight, uint64(floor))
+	ancestor, err = d.findAncestorBinarySearch(p, remoteHeight, floor)
 	if err != nil {
 		return 0, err
 	}
@@ -988,7 +990,7 @@ func (d *Downloader) findAncestorBinarySearch(p *peerConnection, remoteHeight, f
 		}
 	}
 	// Ensure valid ancestry and return
-	if start <= floor && floor != 0 {
+	if start <= floor {
 		p.log.Warn("Ancestor below allowance", "number", start, "hash", hash, "allowance", floor)
 		return 0, errInvalidAncestor
 	}
