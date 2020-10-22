@@ -695,6 +695,10 @@ func (d *Downloader) fetchHead(p *peerConnection) (head *types.Header, pivot *ty
 	}
 }
 
+// requestSpanMaxCount is the maximum number of headers that may be requested by the span search function.
+// It is used solely by calculateRequestSpan.
+var requestSpanMaxCount = MaxHeaderFetch / 16
+
 // calculateRequestSpan calculates what headers to request from a peer when trying to determine the
 // common ancestor.
 // It returns parameters to be used for peer.RequestHeadersByNumber:
@@ -707,7 +711,6 @@ func calculateRequestSpan(remoteHeight, localHeight uint64) (int64, int, int, ui
 	var (
 		from     int
 		count    int
-		MaxCount = MaxHeaderFetch / 16
 	)
 	// requestHead is the highest block that we will ask for. If requestHead is not offset,
 	// the highest block that we will get is 16 blocks back from head, which means we
@@ -724,7 +727,7 @@ func calculateRequestSpan(remoteHeight, localHeight uint64) (int64, int, int, ui
 		requestBottom = 0
 	}
 	totalSpan := requestHead - requestBottom
-	span := 1 + totalSpan/MaxCount
+	span := 1 + totalSpan/requestSpanMaxCount
 	if span < 2 {
 		span = 2
 	}
@@ -733,8 +736,8 @@ func calculateRequestSpan(remoteHeight, localHeight uint64) (int64, int, int, ui
 	}
 
 	count = 1 + totalSpan/span
-	if count > MaxCount {
-		count = MaxCount
+	if count > requestSpanMaxCount {
+		count = requestSpanMaxCount
 	}
 	if count < 2 {
 		count = 2
