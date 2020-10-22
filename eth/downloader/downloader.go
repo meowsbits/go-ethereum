@@ -798,11 +798,8 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 			floor = int64(d.genesis) - 1
 		}
 	}
-	if floor == -1 {
-		floor = 0
-	}
 
-	ancestor, err := d.findAncestorSpanSearch(p, remoteHeight, localHeight, uint64(floor))
+	ancestor, err := d.findAncestorSpanSearch(p, remoteHeight, localHeight, floor)
 	if err == nil {
 		// Limit common ancestor height to local height.
 		// The returned common ancestor value can be above our local height if it is not considered canonical.
@@ -819,7 +816,7 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 		return 0, err
 	}
 
-	ancestor, err = d.findAncestorBinarySearch(p, remoteHeight, uint64(floor))
+	ancestor, err = d.findAncestorBinarySearch(p, remoteHeight, floor)
 	if err != nil {
 		return 0, err
 	}
@@ -829,7 +826,7 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 	return ancestor, nil
 }
 
-func (d *Downloader) findAncestorSpanSearch(p *peerConnection, remoteHeight, localHeight, floor uint64) (commonAncestor uint64, err error) {
+func (d *Downloader) findAncestorSpanSearch(p *peerConnection, remoteHeight, localHeight uint64, floor int64) (commonAncestor uint64, err error) {
 	from, count, skip, max := calculateRequestSpan(remoteHeight, localHeight)
 
 	p.log.Trace("Span searching for common ancestor", "count", count, "from", from, "skip", skip)
@@ -903,7 +900,7 @@ func (d *Downloader) findAncestorSpanSearch(p *peerConnection, remoteHeight, loc
 	}
 	// If the head fetch already found an ancestor, return
 	if hash != (common.Hash{}) {
-		if number <= floor {
+		if int64(number) <= floor {
 			p.log.Warn("Ancestor below allowance", "number", number, "hash", hash, "allowance", floor)
 			return 0, errInvalidAncestor
 		}
@@ -913,13 +910,13 @@ func (d *Downloader) findAncestorSpanSearch(p *peerConnection, remoteHeight, loc
 	return 0, errNoAncestor
 }
 
-func (d *Downloader) findAncestorBinarySearch(p *peerConnection, remoteHeight, floor uint64) (commonAncestor uint64, err error) {
+func (d *Downloader) findAncestorBinarySearch(p *peerConnection, remoteHeight uint64, floor int64) (commonAncestor uint64, err error) {
 	hash := common.Hash{}
 
 	// Ancestor not found, we need to binary search over our chain
 	start, end := uint64(0), remoteHeight
 	if floor > 0 {
-		start = floor
+		start = uint64(floor)
 	}
 	p.log.Trace("Binary searching for common ancestor", "start", start, "end", end)
 
@@ -988,7 +985,7 @@ func (d *Downloader) findAncestorBinarySearch(p *peerConnection, remoteHeight, f
 		}
 	}
 	// Ensure valid ancestry and return
-	if start <= floor && floor != 0 {
+	if int64(start) <= floor && floor != 0 {
 		p.log.Warn("Ancestor below allowance", "number", start, "hash", hash, "allowance", floor)
 		return 0, errInvalidAncestor
 	}
