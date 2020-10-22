@@ -807,21 +807,31 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 		}
 	}
 
-	ancestor, err := d.findAncestorSpanSearch(p, remoteHeight, localHeight, floor)
-	if err == nil {
-		// Limit common ancestor height to local height.
-		// The returned common ancestor value can be above our local height if it is not considered canonical.
-		if ancestor > localHeight {
-			ancestor = localHeight
+	var ancestor uint64
+	var err error
+
+	// Only attempt span search if the local head is "near" to the reported remote.
+	// The condition value for "near" uses MaxHeaderFetch because findAncestorSpanSearch uses
+	// RequestHeadersByNumber which may only ever fetch MaxHeaderFetch blocks.
+	// We use the absolute difference of local vs. remote, though local being above remote is an edge case.
+	near := uint64(MaxHeaderFetch)
+	if (remoteHeight >= localHeight && remoteHeight - localHeight <= near) || localHeight - remoteHeight <= near {
+		ancestor, err = d.findAncestorSpanSearch(p, remoteHeight, localHeight, floor)
+		if err == nil {
+			// Limit common ancestor height to local height.
+			// The returned common ancestor value can be above our local height if it is not considered canonical.
+			if ancestor > localHeight {
+				ancestor = localHeight
+			}
+			return ancestor, nil
 		}
-		return ancestor, nil
-	}
-	// The returned error was not nil.
-	// If the error returned does not reflect that a common ancestor was not found, return it.
-	// If the error reflects that a common ancestor was not found, continue to binary search,
-	// where the error value will be reassigned.
-	if err != errNoAncestor {
-		return 0, err
+		// The returned error was not nil.
+		// If the error returned does not reflect that a common ancestor was not found, return it.
+		// If the error reflects that a common ancestor was not found, continue to binary search,
+		// where the error value will be reassigned.
+		if err != errNoAncestor {
+			return 0, err
+		}
 	}
 
 	ancestor, err = d.findAncestorBinarySearch(p, remoteHeight, floor)
