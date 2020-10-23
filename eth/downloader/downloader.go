@@ -90,7 +90,7 @@ var (
 	errCanceled                = errors.New("syncing canceled (requested)")
 	errNoSyncActive            = errors.New("no sync active")
 	errTooOld                  = errors.New("peer doesn't speak recent enough protocol version (need version >= 63)")
-	errNoAncestor              = errors.New("no common ancestor")
+	errNoAncestorFound         = errors.New("no common ancestor found")
 )
 
 type Downloader struct {
@@ -807,7 +807,7 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 	// If the error returned does not reflect that a common ancestor was not found, return it.
 	// If the error reflects that a common ancestor was not found, continue to binary search,
 	// where the error value will be reassigned.
-	if err != errNoAncestor {
+	if err != errNoAncestorFound {
 		return 0, err
 	}
 
@@ -899,7 +899,7 @@ func (d *Downloader) findAncestorSpanSearch(p *peerConnection, mode SyncMode, re
 		p.log.Debug("Found common ancestor", "number", number, "hash", hash)
 		return number, nil
 	}
-	return 0, errNoAncestor
+	return 0, errNoAncestorFound
 }
 
 func (d *Downloader) findAncestorBinarySearch(p *peerConnection, mode SyncMode, remoteHeight uint64, floor int64) (commonAncestor uint64, err error) {
