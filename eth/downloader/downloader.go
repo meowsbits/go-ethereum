@@ -799,7 +799,7 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 		}
 	}
 
-	ancestor, err := d.findAncestorSpanSearch(p, remoteHeight, localHeight, floor)
+	ancestor, err := d.findAncestorSpanSearch(p, mode, remoteHeight, localHeight, floor)
 	if err == nil {
 		return ancestor, nil
 	}
@@ -811,14 +811,14 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 		return 0, err
 	}
 
-	ancestor, err = d.findAncestorBinarySearch(p, remoteHeight, floor)
+	ancestor, err = d.findAncestorBinarySearch(p, mode, remoteHeight, floor)
 	if err != nil {
 		return 0, err
 	}
 	return ancestor, nil
 }
 
-func (d *Downloader) findAncestorSpanSearch(p *peerConnection, remoteHeight, localHeight uint64, floor int64) (commonAncestor uint64, err error) {
+func (d *Downloader) findAncestorSpanSearch(p *peerConnection, mode SyncMode, remoteHeight, localHeight uint64, floor int64) (commonAncestor uint64, err error) {
 	from, count, skip, max := calculateRequestSpan(remoteHeight, localHeight)
 
 	p.log.Trace("Span searching for common ancestor", "count", count, "from", from, "skip", skip)
@@ -867,7 +867,7 @@ func (d *Downloader) findAncestorSpanSearch(p *peerConnection, remoteHeight, loc
 				n := headers[i].Number.Uint64()
 
 				var known bool
-				switch d.getMode() {
+				switch mode {
 				case FullSync:
 					known = d.blockchain.HasBlock(h, n)
 				case FastSync:
@@ -902,7 +902,7 @@ func (d *Downloader) findAncestorSpanSearch(p *peerConnection, remoteHeight, loc
 	return 0, errNoAncestor
 }
 
-func (d *Downloader) findAncestorBinarySearch(p *peerConnection, remoteHeight uint64, floor int64) (commonAncestor uint64, err error) {
+func (d *Downloader) findAncestorBinarySearch(p *peerConnection, mode SyncMode, remoteHeight uint64, floor int64) (commonAncestor uint64, err error) {
 	hash := common.Hash{}
 
 	// Ancestor not found, we need to binary search over our chain
@@ -946,7 +946,7 @@ func (d *Downloader) findAncestorBinarySearch(p *peerConnection, remoteHeight ui
 				n := headers[0].Number.Uint64()
 
 				var known bool
-				switch d.getMode() {
+				switch mode {
 				case FullSync:
 					known = d.blockchain.HasBlock(h, n)
 				case FastSync:
@@ -977,7 +977,7 @@ func (d *Downloader) findAncestorBinarySearch(p *peerConnection, remoteHeight ui
 		}
 	}
 	// Ensure valid ancestry and return
-	if int64(start) <= floor && floor != 0 {
+	if int64(start) <= floor {
 		p.log.Warn("Ancestor below allowance", "number", start, "hash", hash, "allowance", floor)
 		return 0, errInvalidAncestor
 	}
