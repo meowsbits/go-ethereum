@@ -801,11 +801,6 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 
 	ancestor, err := d.findAncestorSpanSearch(p, remoteHeight, localHeight, floor)
 	if err == nil {
-		// Limit common ancestor height to local height.
-		// The returned common ancestor value can be above our local height if it is not considered canonical.
-		if ancestor > localHeight {
-			ancestor = localHeight
-		}
 		return ancestor, nil
 	}
 	// The returned error was not nil.
@@ -819,9 +814,6 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 	ancestor, err = d.findAncestorBinarySearch(p, remoteHeight, floor)
 	if err != nil {
 		return 0, err
-	}
-	if ancestor > localHeight {
-		ancestor = localHeight
 	}
 	return ancestor, nil
 }
