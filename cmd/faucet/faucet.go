@@ -97,6 +97,8 @@ var (
 
 	noauthFlag = flag.Bool("noauth", false, "Enables funding requests without authentication")
 	logFlag    = flag.Int("loglevel", 3, "Log level to use for Ethereum and the faucet")
+
+	twitterBearerToken = flag.String("twitter.token", "", "Twitter bearer token to authenticate with the twitter API")
 )
 
 var (
@@ -573,10 +575,10 @@ func (f *faucet) apiHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		// Retrieve the Ethereum address to fund, the requesting user and a profile picture
 		var (
-			id       string
-			username string
-			avatar   string
-			address  common.Address
+			unique_id string
+			username  string
+			avatar    string
+			address   common.Address
 		)
 		switch {
 		case strings.HasPrefix(msg.URL, "https://gist.github.com/"):
@@ -593,13 +595,13 @@ func (f *faucet) apiHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		case strings.HasPrefix(msg.URL, "https://twitter.com/"):
-			id, username, avatar, address, err = authTwitter(msg.URL, *twitterBearerToken)
+			unique_id, username, avatar, address, err = authTwitter(msg.URL, *twitterBearerToken)
 		case strings.HasPrefix(msg.URL, "https://www.facebook.com/"):
 			username, avatar, address, err = authFacebook(msg.URL)
-			id = username
+			unique_id = username
 		case *noauthFlag:
 			username, avatar, address, err = authNoAuth(msg.URL)
-			id = username
+			unique_id = username
 		default:
 			//lint:ignore ST1005 This error is to be displayed in the browser
 			err = errors.New("Something funky happened, please open an issue at https://github.com/ethereum/go-ethereum/issues")
@@ -619,7 +621,7 @@ func (f *faucet) apiHandler(w http.ResponseWriter, r *http.Request) {
 			fund    bool
 			timeout time.Time
 		)
-		if timeout = f.timeouts[id]; time.Now().After(timeout) {
+		if timeout = f.timeouts[unique_id]; time.Now().After(timeout) {
 			// User wasn't funded recently, create the funding transaction
 			amount := new(big.Int).Mul(big.NewInt(int64(*payoutFlag)), ether)
 			amount = new(big.Int).Mul(amount, new(big.Int).Exp(big.NewInt(5), big.NewInt(int64(msg.Tier)), nil))
@@ -653,7 +655,7 @@ func (f *faucet) apiHandler(w http.ResponseWriter, r *http.Request) {
 			timeout := time.Duration(*minutesFlag*int(math.Pow(3, float64(msg.Tier)))) * time.Minute
 			grace := timeout / 288 // 24h timeout => 5m grace
 
-			f.timeouts[id] = time.Now().Add(timeout - grace)
+			f.timeouts[unique_id] = time.Now().Add(timeout - grace)
 			fund = true
 		}
 		f.lock.Unlock()
@@ -817,49 +819,14 @@ func sendSuccess(conn *websocket.Conn, msg string) error {
 }
 
 // authTwitter tries to authenticate a faucet request using Twitter posts, returning
-// the username, avatar URL and Ethereum address to fund on success.
-func authTwitter(url string) (string, string, common.Address, error) {
+// the uniqueness identifier (user id/username), username, avatar URL and Ethereum address to fund on success.
+func authTwitter(url string, token string) (string, string, string, common.Address, error) {
 	// Ensure the user specified a meaningful URL, no fancy nonsense
 	parts := strings.Split(url, "/")
 	if len(parts) < 4 || parts[len(parts)-2] != "status" {
 		//lint:ignore ST1005 This error is to be displayed in the browser
-		return "", "", common.Address{}, errors.New("Invalid Twitter status URL")
+		return "", "", "", common.Address{}, errors.New("Invalid Twitter status URL")
 	}
-	// Twitter's API isn't really friendly with direct links. Still, we don't
-	// want to do ask read permissions from users, so just load the public posts
-	// and scrape it for the Ethereum address and profile URL. We need to load
-	// the mobile page though since the main page loads tweet contents via JS.
-	url = strings.Replace(url, "https://twitter.com/", "https://mobile.twitter.com/", 1)
-
-	res, err := http.Get(url)
-	if err != nil {
-		return "", "", common.Address{}, err
-	}
-	defer res.Body.Close()
-
-	// Resolve the username from the final redirect, no intermediate junk
-	parts = strings.Split(res.Request.URL.String(), "/")
-	if len(parts) < 4 || parts[len(parts)-2] != "status" {
-		//lint:ignore ST1005 This error is to be displayed in the browser
-		return "", "", common.Address{}, errors.New("Invalid Twitter status URL")
-	}
-	username := parts[len(parts)-3]
-
-	body, err := ioutil.ReadAll(res.Body)
-	if err != nil {
-		return "", "", common.Address{}, err
-	}
-	address := common.HexToAddress(string(regexp.MustCompile("0x[0-9a-fA-F]{40}").Find(body)))
-	if address == (common.Address{}) {
-		//lint:ignore ST1005 This error is to be displayed in the browser
-		return "", "", common.Address{}, errors.New("No Ethereum address found to fund")
-	}
-	var avatar string
-	if parts = regexp.MustCompile("src=\"([^\"]+twimg.com/profile_images[^\"]+)\"").FindStringSubmatch(string(body)); len(parts) == 2 {
-		avatar = parts[1]
-	}
-	return username + "@twitter", username, avatar, address, nil
-}
 
 	// Twitter's API isn't really friendly with direct links.
 	// It is restricted to 300 queries / 15 minute with an app api key.
@@ -867,7 +834,49 @@ func authTwitter(url string) (string, string, common.Address, error) {
 
 	// If twitter bearer token is provided, use the twitter api
 	if token != "" {
-		return authTwitterWithToken(parts[len(parts)-1], token)
+		// Strip any query parameters from the tweet id
+		tweetID := strings.Split(parts[len(parts)-1], "?")[0]
+
+		// Query the tweet details from Twitter
+		url := "https://api.twitter.com/2/tweets/" + tweetID + "?expansions=author_id&user.fields=profile_image_url"
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return "", "", "", common.Address{}, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return "", "", "", common.Address{}, err
+		}
+		defer res.Body.Close()
+
+		var result struct {
+			Data struct {
+				AuthorID string `json:"author_id"`
+				ID       string `json:"id"`
+				Text     string `json:"text"`
+			} `json:"data"`
+			Includes struct {
+				Users []struct {
+					ProfileImageURL string `json:"profile_image_url"`
+					Username        string `json:"username"`
+					ID              string `json:"id"`
+					Name            string `json:"name"`
+				} `json:"users"`
+			} `json:"includes"`
+		}
+
+		err = json.NewDecoder(res.Body).Decode(&result)
+		if err != nil {
+			return "", "", "", common.Address{}, err
+		}
+
+		address := common.HexToAddress(regexp.MustCompile("0x[0-9a-fA-F]{40}").FindString(result.Data.Text))
+		if address == (common.Address{}) {
+			//lint:ignore ST1005 This error is to be displayed in the browser
+			return "", "", "", common.Address{}, errors.New("No Ethereum address found to fund")
+		}
+		return result.Data.AuthorID + "@twitter", result.Includes.Users[0].Username, result.Includes.Users[0].ProfileImageURL, address, nil
 	}
 
 	// Twiter API token isn't provided so we just load the public posts
@@ -903,54 +912,6 @@ func authTwitter(url string) (string, string, common.Address, error) {
 		avatar = parts[1]
 	}
 	return username + "@twitter", username + "@twitter", avatar, address, nil
-}
-
-// authTwitterWithToken tries to authenticate a faucet request using Twitter's API, returning
-// the uniqueness identifier (user id/username), username, avatar URL and Ethereum address to fund on success.
-func authTwitterWithToken(tweetID string, token string) (string, string, string, common.Address, error) {
-	// Strip any query parameters from the tweet id
-	sanitizedTweetID := strings.Split(tweetID, "?")[0]
-
-	// Query the tweet details from Twitter
-	url := fmt.Sprintf("https://api.twitter.com/2/tweets/%s?expansions=author_id&user.fields=profile_image_url", sanitizedTweetID)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return "", "", "", common.Address{}, err
-	}
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", "", "", common.Address{}, err
-	}
-	defer res.Body.Close()
-
-	var result struct {
-		Data struct {
-			AuthorID string `json:"author_id"`
-			ID       string `json:"id"`
-			Text     string `json:"text"`
-		} `json:"data"`
-		Includes struct {
-			Users []struct {
-				ProfileImageURL string `json:"profile_image_url"`
-				Username        string `json:"username"`
-				ID              string `json:"id"`
-				Name            string `json:"name"`
-			} `json:"users"`
-		} `json:"includes"`
-	}
-
-	err = json.NewDecoder(res.Body).Decode(&result)
-	if err != nil {
-		return "", "", "", common.Address{}, err
-	}
-
-	address := common.HexToAddress(regexp.MustCompile("0x[0-9a-fA-F]{40}").FindString(result.Data.Text))
-	if address == (common.Address{}) {
-		//lint:ignore ST1005 This error is to be displayed in the browser
-		return "", "", "", common.Address{}, errors.New("No Ethereum address found to fund")
-	}
-	return result.Data.AuthorID + "@twitter", result.Includes.Users[0].Username, result.Includes.Users[0].ProfileImageURL, address, nil
 }
 
 // authFacebook tries to authenticate a faucet request using Facebook posts,
