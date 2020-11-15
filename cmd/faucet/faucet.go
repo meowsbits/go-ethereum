@@ -861,6 +861,50 @@ func authTwitter(url string) (string, string, common.Address, error) {
 	return username + "@twitter", username, avatar, address, nil
 }
 
+	// Twitter's API isn't really friendly with direct links.
+	// It is restricted to 300 queries / 15 minute with an app api key.
+	// Anything more will require read only authorization from the users and that we want to avoid.
+
+	// If twitter bearer token is provided, use the twitter api
+	if token != "" {
+		return authTwitterWithToken(parts[len(parts)-1], token)
+	}
+
+	// Twiter API token isn't provided so we just load the public posts
+	// and scrape it for the Ethereum address and profile URL. We need to load
+	// the mobile page though since the main page loads tweet contents via JS.
+	url = strings.Replace(url, "https://twitter.com/", "https://mobile.twitter.com/", 1)
+
+	res, err := http.Get(url)
+	if err != nil {
+		return "", "", "", common.Address{}, err
+	}
+	defer res.Body.Close()
+
+	// Resolve the username from the final redirect, no intermediate junk
+	parts = strings.Split(res.Request.URL.String(), "/")
+	if len(parts) < 4 || parts[len(parts)-2] != "status" {
+		//lint:ignore ST1005 This error is to be displayed in the browser
+		return "", "", "", common.Address{}, errors.New("Invalid Twitter status URL")
+	}
+	username := parts[len(parts)-3]
+
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return "", "", "", common.Address{}, err
+	}
+	address := common.HexToAddress(string(regexp.MustCompile("0x[0-9a-fA-F]{40}").Find(body)))
+	if address == (common.Address{}) {
+		//lint:ignore ST1005 This error is to be displayed in the browser
+		return "", "", "", common.Address{}, errors.New("No Ethereum address found to fund")
+	}
+	var avatar string
+	if parts = regexp.MustCompile("src=\"([^\"]+twimg.com/profile_images[^\"]+)\"").FindStringSubmatch(string(body)); len(parts) == 2 {
+		avatar = parts[1]
+	}
+	return username + "@twitter", username + "@twitter", avatar, address, nil
+}
+
 // authTwitterWithToken tries to authenticate a faucet request using Twitter's API, returning
 // the uniqueness identifier (user id/username), username, avatar URL and Ethereum address to fund on success.
 func authTwitterWithToken(tweetID string, token string) (string, string, string, common.Address, error) {
